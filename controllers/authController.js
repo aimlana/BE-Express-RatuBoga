@@ -18,7 +18,7 @@ const register = async (req, res) => {
   }
 
   const passwordRegex =
-    /^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+    /^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&.])[A-Za-z\d@$!%*?&.]{8,}$/;
 
   if (!passwordRegex.test(password)) {
     return res.status(400).json({
