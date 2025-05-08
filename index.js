@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path')
 const app = express();
 const cors = require('cors');
 require('dotenv').config();
@@ -11,6 +12,7 @@ const categoryRoutes = require('./routes/categoryRoutes');
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'))); // upload image
 
 // Gunakan route
 app.use('/api/auth', authRoutes);
