@@ -1,19 +1,41 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
-const authMiddleware = require('../middlewares/authMiddleware');
+const {
+  authenticateToken,
+  authorizeRoles,
+} = require('../middlewares/authMiddleware');
 
-// Routes for admin
-router.use(
-  authMiddleware.authenticateToken,
-  authMiddleware.authorizeRoles([1])
+// Admin-only routes
+router.get(
+  '/',
+  authenticateToken,
+  authorizeRoles([1]),
+  userController.getAllUsers
 );
-
-router.post('/', userController.createUser);
-
-router.get('/', userController.getAllUsers);
-router.get('/:uuid', userController.getUserByUuid);
-router.put('/:uuid', userController.updateUserByUuid);
-router.delete('/:uuid', userController.deleteUserByUuid);
+router.get(
+  '/:uuid',
+  authenticateToken,
+  authorizeRoles([1]),
+  userController.getUserByUuid
+);
+router.post(
+  '/',
+  authenticateToken,
+  authorizeRoles([1]),
+  userController.createUser
+);
+router.put(
+  '/:uuid',
+  authenticateToken,
+  authorizeRoles([1]),
+  userController.updateUserByUuid
+);
+router.delete(
+  '/:uuid',
+  authenticateToken,
+  authorizeRoles([1]),
+  userController.deleteUserByUuid
+);
 
 module.exports = router;
