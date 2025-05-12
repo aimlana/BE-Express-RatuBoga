@@ -14,18 +14,18 @@ class CartController {
   static async addItem(req, res) {
     try {
       const { userId } = req;
-      const { menuId, quantity, catatan } = req.body;
+      const { menuId, quantity, notes } = req.body;
 
       const cart = await this.getOrCreateUserCart(userId);
 
       const [item, created] = await CartItem.findOrCreate({
         where: { cartId: cart.id, menuId },
-        defaults: { quantity, catatan },
+        defaults: { quantity, notes },
       });
 
       if (!created) {
         item.quantity += quantity;
-        if (catatan) item.catatan = catatan;
+        if (notes) item.notes = notes;
         await item.save();
       }
 
@@ -45,7 +45,7 @@ class CartController {
   static async updateItem(req, res) {
     try {
       const { id } = req.params;
-      const { quantity, catatan } = req.body;
+      const { quantity, notes } = req.body;
 
       const item = await CartItem.findByPk(id);
       if (!item) {
@@ -56,7 +56,7 @@ class CartController {
       }
 
       if (quantity) item.quantity = quantity;
-      if (catatan) item.catatan = catatan;
+      if (notes) item.notes = notes;
 
       await item.save();
 
