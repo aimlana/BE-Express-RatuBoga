@@ -51,5 +51,6 @@ pids/
 # Swagger generated files
 swagger-output.json
 
-# images upload
+# images
 public/uploads/
+public/qrMeja/
