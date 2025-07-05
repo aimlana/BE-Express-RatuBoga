@@ -4,23 +4,18 @@ const app = express();
 const cors = require('cors');
 require('dotenv').config();
 
-const authRoutes = require('./routes/authRoutes');
-const userRoutes = require('./routes/userRoutes');
-const menuRoutes = require('./routes/menuRoutes');
-const categoryRoutes = require('./routes/categoryRoutes');
-const cartRoutes = require('./routes/cartRoutes');
+const apiKeyMiddleware = require('./middlewares/apiKeyMiddleware')
+const routes = require('./routes');
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'))); // upload image
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'))); 
 
 // Gunakan route
-app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
-app.use('/api/menu', menuRoutes);
-app.use('/api/category', categoryRoutes);
-app.use('/api/cart', cartRoutes);
+for (const [path, route] of Object.entries(routes)) {
+  app.use(path, route);
+}
 
 // Contoh root endpoint
 app.get('/', (req, res) => {
