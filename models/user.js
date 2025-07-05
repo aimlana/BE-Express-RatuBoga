@@ -5,7 +5,6 @@ const {
 module.exports = (sequelize, DataTypes) => {
   class User extends Model {
     static associate(models) {
-      User.belongsTo(models.Role, { foreignKey: 'role_id' });
       User.hasOne(models.Cart, { foreignKey: 'userId' });
     }
   }
@@ -31,11 +30,6 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         unique: true,
       },
-      address: DataTypes.TEXT,
-      role_id: {
-        type: DataTypes.STRING,
-        defaultValue: 2,
-      }
     },
     {
       sequelize,
