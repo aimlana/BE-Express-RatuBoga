@@ -1,88 +1,34 @@
-const { User, Auth, Role } = require('../models');
+const { User, Auth } = require('../models');
 const { Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-const { maskEmail, maskPhoneNumber } = require('../utils/maskers')
+const { maskEmail, maskPhoneNumber } = require('../utils/maskers');
 
 const SECRET_KEY = process.env.JWT_SECRET;
-
-// Registrasi
-const register = async (req, res) => {
-  const { name, email, phone_number, address, password } = req.body;
-
-  if (!name || !email || !phone_number || !password) {
-    return res.status(400).json({ message: 'Semua field harus diisi' });
-  }
-
-  const passwordRegex =
-    /^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&.])[A-Za-z\d@$!%*?&.]{8,}$/;
-
-  if (!passwordRegex.test(password)) {
-    return res.status(400).json({
-      message:
-        'Password harus minimal 8 karakter dan mengandung setidaknya satu huruf, satu angka, dan satu simbol',
-    });
-  }
-
-  try {
-    const userExists = await User.findOne({
-      where: {
-        [Op.or]: [{ email }, { phone_number }],
-      },
-    });
-
-    if (userExists) {
-      return res
-        .status(400)
-        .json({ message: 'Email atau nomor telepon sudah terdaftar' });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await User.create({
-      name,
-      email,
-      phone_number,
-      address,
-    });
-
-    await Auth.create({
-      user_id: newUser.id,
-      password: hashedPassword,
-    });
-
-    return res.status(201).json({
-      message: 'Registrasi berhasil',
-      userId: newUser.id,
-      createdAt: newUser.createdAt,
-    });
-  } catch (err) {
-    console.error(err);
-    return res
-      .status(500)
-      .json({ message: 'Terjadi kesalahan saat registrasi' });
-  }
-};
 
 // Login
 const login = async (req, res) => {
   const { login, password } = req.body;
 
   if (!login || !password) {
-    return res.status(400).json({ message: 'Email / no. hp dan password harus diisi' });
+    return res
+      .status(400)
+      .json({ message: 'Email / no. hp dan password harus diisi' });
   }
 
   try {
     const isMail = login.includes('@');
     const user = await User.findOne({
       where: isMail ? { email: login } : { phone_number: login },
-      include: Role 
     });
-    
+
     if (!user)
-      return res.status(404).json({ message: isMail ? 'Email belum terdaftar' : 'No. HP belum terdaftar' });
+      return res.status(404).json({
+        message: isMail ? 'Email belum terdaftar' : 'No. HP belum terdaftar',
+      });
 
     const authData = await Auth.findOne({ where: { user_id: user.id } });
     if (!authData)
@@ -94,31 +40,67 @@ const login = async (req, res) => {
     if (!passwordMatch)
       return res.status(401).json({ message: 'Password salah' });
 
-    // Token jwt
-    const token = jwt.sign(
-      { id: user.id, uuid: user.uuid, role: user.Role.name },
-      SECRET_KEY,
-      { expiresIn: '1d' }
-    );
-
-    console.log(token);
+    const token = jwt.sign({ id: user.id, uuid: user.uuid }, SECRET_KEY, {
+      expiresIn: '1h',
+    });
 
     return res.status(200).json({
-      message: 'Login berhasil', 
+      message: 'Login berhasil',
       token,
       user: {
         id: user.id,
         name: user.name,
         email: maskEmail(user.email),
         phone_number: maskPhoneNumber(user.phone_number),
-        role: user.Role.name
-      }
+      },
     });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Terjadi kesalahan saat login' });
   }
 };
+
+// Change data
+const updateProfile = async (req, res) => {
+  const userId = req.userId;
+  const { name, email, phone_number, oldPassword, newPassword } = req.body;
+
+  if (!name || !email || !phone_number) {
+    return res
+      .status(400)
+      .json({ message: 'Nama, email, dan no. HP wajib diisi' });
+  }
+
+  try {
+    await User.update({ name, email, phone_number }, { where: { id: userId } });
+
+    if (oldPassword && newPassword) {
+      const authData = await Auth.findOne({ where: { user_id: userId } });
+      const passwordMatch = await bcrypt.compare(
+        oldPassword,
+        authData.password
+      );
+      if (!passwordMatch) {
+        return res.status(401).json({ message: 'Password lama salah' });
+      }
+
+      const hashedNew = await bcrypt.hash(newPassword, 10);
+      await Auth.update(
+        { password: hashedNew },
+        { where: { user_id: userId } }
+      );
+    }
+
+    return res.status(200).json({ message: 'Profil berhasil diperbarui' });
+  } catch (err) {
+    console.error(err);
+    return res
+      .status(500)
+      .json({ message: 'Terjadi kesalahan saat update profil' });
+  }
+};
+
+
 
 // Forgot Password
 const forgotPassword = async (req, res) => {
@@ -154,9 +136,7 @@ const forgotPassword = async (req, res) => {
               <p>Jika Anda tidak merasa meminta reset password, abaikan email ini.</p>
               <p>Terima kasih,</p>
               <p><b>Tim Ratu Boga</b></p> <br/>
-              <p><i>Catatan: link ini hanya berlaku 2 jam, setelahnya akan expire</i></p>
-            `,
-      replyTo: `<${process.env.EMAIL_USER}>`,
+              <p><i>Catatan: link ini hanya berlaku 2 jam, setelahnya akan expire</i></p>`,
     };
 
     await transporter.sendMail(mailOptions);
@@ -178,9 +158,9 @@ const resetPassword = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    const result = await Auth.update(
+    await Auth.update(
       { password: hashedPassword },
-      { where: { id: userId } }
+      { where: { user_id: userId } }
     );
 
     res.status(200).json({ message: 'Password berhasil direset' });
@@ -192,7 +172,6 @@ const resetPassword = async (req, res) => {
 };
 
 module.exports = {
-  register,
   login,
   forgotPassword,
   resetPassword,
