@@ -8,6 +8,7 @@ const { multerUpload } = require('../middlewares/uploads');
 
 
 // Public
+router.get('/search', menuController.searchMenus);
 router.get('/', menuController.getAllMenus);
 router.get('/:id', menuController.getMenusById);
 

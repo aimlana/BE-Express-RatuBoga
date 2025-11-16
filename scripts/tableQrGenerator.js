@@ -2,7 +2,8 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
-const baseURL = 'http://localhost:5173/order/';
+const BASE_URL_FRONTEND = process.env.FRONTEND_LINK
+const baseURL = `${BASE_URL_FRONTEND}/order`;
 const outputFolder = path.join(__dirname, '..', 'public', 'qrMeja');
 
 if (!fs.existsSync(outputFolder)) {

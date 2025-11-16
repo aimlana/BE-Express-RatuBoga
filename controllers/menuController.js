@@ -1,15 +1,63 @@
-const { Menu } = require('../models');
+const { Menu, Category } = require('../models');
 const { Op } = require('sequelize');
 const { deleteOldFile } = require('../middlewares/uploads')
 
 const getAllMenus = async (req, res) => {
-  const { page = 1, limit = 10 } = req.query;
+  const {
+    page = 1,
+    limit = 12,
+    sortBy = 'name',
+    sortOrder = 'ASC',
+    minPrice,
+    maxPrice,
+    categoryId,
+  } = req.query;
+
   const offset = (page - 1) * limit;
+
   try {
+    // Build where condition
+    const whereCondition = {};
+
+    if (req.query.search) {
+      whereCondition[Op.or] = [
+        { name: { [Op.like]: `%${req.query.search}%` } },
+        { description: { [Op.like]: `%${req.query.search}%` } },
+      ];
+    }
+
+    // Filter by price range
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      whereCondition.price = {};
+      if (minPrice !== undefined) {
+        whereCondition.price[Op.gte] = parseFloat(minPrice);
+      }
+      if (maxPrice !== undefined) {
+        whereCondition.price[Op.lte] = parseFloat(maxPrice);
+      }
+    }
+
+    // Filter by category
+    if (categoryId && categoryId !== 'null') {
+      whereCondition.categoryId = parseInt(categoryId);
+    }
+
+    // Build order condition
+    let order = [];
+    if (sortBy && sortOrder) {
+      order = [[sortBy, sortOrder.toUpperCase()]];
+    } else {
+      order = [['name', 'ASC']]; 
+    }
+
     const { count, rows: menus } = await Menu.findAndCountAll({
+      where: whereCondition,
       limit: parseInt(limit),
       offset: parseInt(offset),
+      order: order,
     });
+
+    const totalPages = Math.ceil(count / parseInt(limit));
 
     res.json({
       success: true,
@@ -18,13 +66,14 @@ const getAllMenus = async (req, res) => {
         total: count,
         page: parseInt(page),
         limit: parseInt(limit),
+        totalPages: totalPages, 
       },
     });
-    
   } catch (err) {
-    res.status(500).json({ 
+    console.error('Error getting menus:', err);
+    res.status(500).json({
       success: false,
-      message: 'Gagal mendapatkan data menu' 
+      message: 'Gagal mendapatkan data menu',
     });
   }
 };
@@ -152,10 +201,81 @@ const deleteMenu = async (req, res) => {
   }
 };
 
+const searchMenus = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 12,
+      search = '',
+      categoryId = null,
+      sortBy = 'name',
+      sortOrder = 'ASC',
+    } = req.query;
+
+    const offset = (page - 1) * limit;
+
+    let whereCondition = {};
+
+    // kondisi pencarian
+    if (search) {
+      whereCondition = {
+        ...whereCondition,
+        [Op.or]: [
+          { name: { [Op.like]: `%${search}%` } },
+          { description: { [Op.like]: `%${search}%` } },
+        ],
+      };
+    }
+
+    // filter kategori 
+    if (categoryId) {
+      whereCondition = {
+        ...whereCondition,
+        categoryId: categoryId,
+      };
+    }
+
+    const { count, rows: menus } = await Menu.findAndCountAll({
+      where: whereCondition,
+      include: [
+        {
+          model: Category,
+          as: 'Category',
+          attributes: ['id', 'name'],
+        },
+      ],
+      order: [[sortBy, sortOrder.toUpperCase()]],
+      limit: parseInt(limit),
+      offset: offset,
+    });
+
+    const totalPages = Math.ceil(count / parseInt(limit));
+
+    res.json({
+      success: true,
+      data: menus,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: count,
+        totalPages: totalPages, 
+      },
+    });
+  } catch (error) {
+    console.error('Search menus error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Gagal melakukan pencarian menu',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllMenus,
   getMenusById,
   createMenu,
   updateMenu,
   deleteMenu,
+  searchMenus,
 };

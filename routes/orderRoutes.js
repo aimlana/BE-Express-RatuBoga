@@ -1,8 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require('../middlewares/authMiddleware');
 const {
+  authenticateToken,
+  requireAdmin,
+} = require('../middlewares/authMiddleware');
+const {
+  validateTableNumber,
   createOrder,
+  createOrderGuest,
   getAllOrders,
   getOrderById,
   getPublicOrderById,
@@ -11,15 +16,24 @@ const {
   getReport,
 } = require('../controllers/orderController');
 
-// Public routes (no authentication)
-router.post('/', createOrder); 
-router.get('/public/:id', getPublicOrderById)
+// untuk guest
+router.post('/guest', createOrderGuest);
 
-// Admin routes (require authentication)
-router.get('/', authenticateToken, getAllOrders);
-router.get('/:id', authenticateToken, getOrderById);
-router.put('/:id/status', authenticateToken, updateOrderStatus);
-router.patch('/:id/confirm-payment', authenticateToken, confirmCashPayment);
-router.get('/report', authenticateToken, getReport);
+// Public
+router.post('/', authenticateToken, createOrder); 
+router.get('/public/:id', getPublicOrderById);
+router.get('/validate-table/:tableNumber', validateTableNumber);
+
+// Admin routes (require authentication + admin role)
+router.get('/', authenticateToken, requireAdmin, getAllOrders);
+router.get('/:id', authenticateToken, requireAdmin, getOrderById);
+router.put('/:id/status', authenticateToken, requireAdmin, updateOrderStatus);
+router.patch(
+  '/:id/confirm-payment',
+  authenticateToken,
+  requireAdmin,
+  confirmCashPayment
+);
+router.get('/admin/report', authenticateToken, requireAdmin, getReport);
 
 module.exports = router;

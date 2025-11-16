@@ -52,5 +52,4 @@ pids/
 swagger-output.json
 
 # images
-public/uploads/
-public/qrMeja/
+public/*

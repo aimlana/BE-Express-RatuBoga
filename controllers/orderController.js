@@ -1,38 +1,216 @@
-const { Order, OrderItem, Menu } = require('../models');
+const {
+  Order,
+  OrderItem,
+  Menu,
+  Payment,
+  User,
+  UserCoupon,
+  Coupon,
+  Table,
+  sequelize,
+} = require('../models');
 const { Op } = require('sequelize');
 
-const createOrder = async (req, res) => {
-  const { no_meja, payment_type, items, notes } = req.body;
-
+const validateTableNumber = async (req, res) => {
   try {
-    // Validasi
-    if (!payment_type || !items?.length) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Data tidak lengkap' });
+    const { tableNumber } = req.params;
+
+    if (!tableNumber || isNaN(tableNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nomor meja tidak valid',
+      });
     }
 
-    // Hitung total harga
+    const tableNum = parseInt(tableNumber);
+
+    const table = await Table.findOne({
+      where: {
+        table_number: tableNum,
+        is_active: true,
+      },
+    });
+
+    if (!table) {
+      return res.status(404).json({
+        success: false,
+        message: `Meja #${tableNum} tidak ditemukan atau tidak aktif`,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Meja valid',
+      data: {
+        table_id: table.id,
+        table_number: table.table_number,
+        qr_code_url: table.qr_code_url,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat memvalidasi meja',
+      error: process.env.NODE_ENV === 'development' ? error.message : null,
+    });
+  }
+};
+
+const createOrder = async (req, res) => {
+  const { table_number, items, notes, user_coupon_id } = req.body;
+
+  if (!items?.length) {
+    return res.status(400).json({
+      success: false,
+      message: 'Items are required',
+    });
+  }
+
+  let table = null;
+  let table_id = null;
+
+  if (table_number) {
+    table = await Table.findOne({
+      where: {
+        table_number: table_number,
+        is_active: true,
+      },
+    });
+
+    if (!table) {
+      return res.status(400).json({
+        success: false,
+        message: `Nomor meja ${table_number} tidak valid atau tidak aktif`,
+      });
+    }
+    table_id = table.id;
+  }
+
+  const type = table_number ? 'dine-in' : 'take-away';
+  const transaction = await sequelize.transaction();
+
+  try {
     const menus = await Menu.findAll({
       where: { id: items.map((i) => i.menu_id) },
+      transaction,
     });
-    const total_price = menus.reduce((sum, menu) => {
+
+    let total_price = menus.reduce((sum, menu) => {
       const item = items.find((i) => i.menu_id === menu.id);
       return sum + menu.price * item.quantity;
     }, 0);
 
-    // Buat order
-    const order = await Order.create({
-      no_meja,
-      type: no_meja ? 'dine-in' : 'take-away',
-      status: 'pending',
-      payment_type,
-      is_paid: payment_type === 'midtrans',
-      total_price,
-      notes: notes || null,
-    });
+    let discount_amount = 0;
+    let coupon_used = null;
+    let final_price = total_price;
+    let user_coupon = null;
 
-    // Buat order items
+    if (user_coupon_id && req.user?.id) {
+      try {
+        user_coupon = await UserCoupon.findOne({
+          where: {
+            id: user_coupon_id,
+            user_id: req.user.id,
+            is_used: false,
+          },
+          include: [
+            {
+              model: Coupon,
+              as: 'coupon',
+              where: {
+                is_active: true,
+                [Op.or]: [
+                  { valid_until: null },
+                  { valid_until: { [Op.gt]: new Date() } },
+                ],
+              },
+            },
+          ],
+          transaction,
+        });
+
+        if (user_coupon && user_coupon.coupon) {
+          const coupon = user_coupon.coupon;
+
+          if (coupon.max_usage && coupon.current_usage >= coupon.max_usage) {
+            await transaction.rollback();
+            return res.status(400).json({
+              success: false,
+              message: 'Kupon sudah mencapai batas penggunaan',
+            });
+          }
+
+          if (coupon.discount_type === 'percentage') {
+            discount_amount = Math.floor(
+              total_price * (coupon.discount_value / 100)
+            );
+          } else if (coupon.discount_type === 'fixed') {
+            discount_amount = Math.min(coupon.discount_value, total_price);
+          }
+
+          final_price = Math.max(0, total_price - discount_amount);
+
+          await Coupon.increment('current_usage', {
+            by: 1,
+            where: { id: coupon.id },
+            transaction,
+          });
+
+          const [affectedRows] = await UserCoupon.update(
+            {
+              is_used: true,
+              used_at: new Date(),
+            },
+            {
+              where: {
+                id: user_coupon.id,
+                is_used: false,
+              },
+              transaction,
+            }
+          );
+
+          if (affectedRows === 0) {
+            await transaction.rollback();
+            return res.status(400).json({
+              success: false,
+              message: 'Kupon sudah digunakan oleh proses lain',
+            });
+          }
+
+          coupon_used = {
+            coupon_id: coupon.id,
+            coupon_name: coupon.name,
+            discount_type: coupon.discount_type,
+            discount_value: coupon.discount_value,
+            discount_amount: discount_amount,
+            user_coupon_id: user_coupon.id,
+          };
+        }
+      } catch (couponError) {
+        // Continue without coupon if there's an error
+      }
+    }
+
+    const order = await Order.create(
+      {
+        table_id: table_id,
+        type,
+        status: 'pending',
+        payment_type: 'cash',
+        is_paid: false,
+        total_price: final_price,
+        original_price: total_price,
+        discount_amount: discount_amount,
+        user_id: req.user?.id || null,
+        notes: notes || null,
+        coupon_used: coupon_used ? JSON.stringify(coupon_used) : null,
+        points_awarded: false,
+        points_earned: 0,
+      },
+      { transaction }
+    );
+
     await OrderItem.bulkCreate(
       items.map((item) => ({
         order_id: order.id,
@@ -40,34 +218,164 @@ const createOrder = async (req, res) => {
         quantity: item.quantity,
         subtotal:
           menus.find((m) => m.id === item.menu_id).price * item.quantity,
-        notes: item.notes || null,
-      }))
+      })),
+      { transaction }
     );
 
-    // Jika midtrans, generate payment URL
-    if (payment_type === 'midtrans') {
-      const paymentUrl = await generateMidtransPayment(order);
-      return res.json({
-        success: true,
-        paymentUrl,
-        orderId: order.id,
+    await Payment.create(
+      {
+        order_id: order.id,
+        amount: final_price,
+        status: 'pending',
+      },
+      { transaction }
+    );
+
+    await transaction.commit();
+
+    return res.json({
+      success: true,
+      orderId: order.id,
+      message: coupon_used
+        ? 'Order berhasil dibuat dengan kupon'
+        : 'Order created successfully',
+      data: {
+        order_id: order.id,
+        table_number: table_number,
+        total_price: final_price,
+        original_price: total_price,
+        discount_amount: discount_amount,
+        coupon_used: coupon_used,
+        points_earned: 0,
+      },
+    });
+  } catch (error) {
+    await transaction.rollback();
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create order',
+      error: process.env.NODE_ENV === 'development' ? error.message : null,
+    });
+  }
+};
+
+const createOrderGuest = async (req, res) => {
+  const {
+    table_number,
+    items,
+    notes,
+    payment_type,
+    service_type,
+    totalAmount,
+  } = req.body;
+
+  if (!items?.length) {
+    return res.status(400).json({
+      success: false,
+      message: 'Items are required',
+    });
+  }
+
+  let table = null;
+  let table_id = null;
+
+  if (table_number) {
+    table = await Table.findOne({
+      where: { table_number, is_active: true },
+    });
+
+    if (!table) {
+      return res.status(400).json({
+        success: false,
+        message: `Nomor meja ${table_number} tidak valid atau tidak aktif`,
       });
     }
 
-    res.json({
+    table_id = table.id;
+  }
+
+  const type = table_number ? 'dine-in' : 'take-away';
+  const transaction = await sequelize.transaction();
+
+  try {
+    const menus = await Menu.findAll({
+      where: { id: items.map((i) => i.menu_id) },
+      transaction,
+    });
+
+    const total_price = menus.reduce((sum, menu) => {
+      const item = items.find((i) => i.menu_id === menu.id);
+      return sum + menu.price * item.quantity;
+    }, 0);
+
+    const order = await Order.create(
+      {
+        table_id,
+        type,
+        status: 'pending',
+        payment_type: payment_type || 'cash',
+        is_paid: false,
+        total_price,
+        original_price: total_price,
+        discount_amount: 0,
+        user_id: null,
+        notes: notes || null,
+        coupon_used: null,
+        points_awarded: false,
+        points_earned: 0,
+      },
+      { transaction }
+    );
+
+    await OrderItem.bulkCreate(
+      items.map((item) => ({
+        order_id: order.id,
+        menu_id: item.menu_id,
+        quantity: item.quantity,
+        subtotal:
+          menus.find((m) => m.id === item.menu_id).price * item.quantity,
+      })),
+      { transaction }
+    );
+
+    await Payment.create(
+      {
+        order_id: order.id,
+        amount: total_price,
+        status: 'pending',
+      },
+      { transaction }
+    );
+
+    await transaction.commit();
+
+    return res.json({
       success: true,
       orderId: order.id,
-      needPaymentConfirmation: true,
+      message: 'Guest order created successfully',
+      data: {
+        order_id: order.id,
+        table_number,
+        total_price,
+        type,
+      },
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Server error' });
+  } catch (error) {
+    await transaction.rollback();
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create guest order',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 };
 
 const getAllOrders = async (req, res) => {
+  const { page = 1, limit = 12 } = req.query;
+  const offset = (page - 1) * limit;
+
   try {
-    const orders = await Order.findAll({
+    const { count, rows: orders } = await Order.findAndCountAll({
       include: [
         {
           model: OrderItem,
@@ -77,20 +385,41 @@ const getAllOrders = async (req, res) => {
             attributes: ['name', 'price'],
           },
         },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          required: false,
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number', 'is_active'],
+          required: false,
+        },
       ],
       order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      distinct: true,
     });
 
     res.status(200).json({
       success: true,
       message: 'Berhasil mengambil data pesanan',
       data: orders,
+      pagination: {
+        total: count,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(count / limit),
+      },
     });
   } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .json({ success: false, message: 'Gagal mengambil data pesanan' });
+    res.status(500).json({
+      success: false,
+      message: 'Gagal mengambil data pesanan',
+    });
   }
 };
 
@@ -109,6 +438,18 @@ const getOrderById = async (req, res) => {
             attributes: ['id', 'name', 'price', 'imageUrl'],
           },
         },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          required: false,
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number', 'is_active'],
+          required: false,
+        },
       ],
     });
 
@@ -119,12 +460,16 @@ const getOrderById = async (req, res) => {
       });
     }
 
+    const orderData = order.toJSON();
+    if (orderData.coupon_used) {
+      orderData.coupon_used = JSON.parse(orderData.coupon_used);
+    }
+
     res.status(200).json({
       success: true,
-      data: order,
+      data: orderData,
     });
   } catch (err) {
-    console.error('Error fetching order:', err);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch order details',
@@ -142,10 +487,11 @@ const getPublicOrderById = async (req, res) => {
         'id',
         'status',
         'type',
-        'no_meja',
         'payment_type',
         'is_paid',
         'total_price',
+        'original_price',
+        'discount_amount',
         'notes',
         'createdAt',
       ],
@@ -153,11 +499,17 @@ const getPublicOrderById = async (req, res) => {
         {
           model: OrderItem,
           as: 'items',
-          attributes: ['id', 'quantity', 'subtotal'], // Hapus notes dari sini
+          attributes: ['id', 'quantity', 'subtotal'],
           include: {
             model: Menu,
             attributes: ['id', 'name', 'price', 'imageUrl'],
           },
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number'],
+          required: false,
         },
       ],
     });
@@ -174,12 +526,65 @@ const getPublicOrderById = async (req, res) => {
       data: order,
     });
   } catch (err) {
-    console.error('Error in getPublicOrderById:', err);
     res.status(500).json({
       success: false,
       message: 'Server error',
-      error: err.message,
     });
+  }
+};
+
+const addPointsAfterOrderCompletion = async (orderId) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const order = await Order.findByPk(orderId, { transaction });
+
+    if (!order) {
+      await transaction.rollback();
+      return;
+    }
+
+    if (order.status !== 'done') {
+      await transaction.rollback();
+      return;
+    }
+
+    if (!order.is_paid) {
+      await transaction.rollback();
+      return;
+    }
+
+    if (!order.user_id) {
+      await transaction.rollback();
+      return;
+    }
+
+    if (order.points_awarded) {
+      await transaction.rollback();
+      return;
+    }
+
+    const points_earned = Math.floor(order.total_price / 10000);
+
+    if (points_earned > 0) {
+      const user = await User.findByPk(order.user_id, { transaction });
+
+      if (!user) {
+        await transaction.rollback();
+        return;
+      }
+
+      user.points += points_earned;
+      await user.save({ transaction });
+
+      order.points_awarded = true;
+      order.points_earned = points_earned;
+      await order.save({ transaction });
+    }
+
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
   }
 };
 
@@ -188,7 +593,31 @@ const updateOrderStatus = async (req, res) => {
   const { status } = req.body;
 
   try {
-    const order = await Order.findByPk(id);
+    const order = await Order.findByPk(id, {
+      include: [
+        {
+          model: OrderItem,
+          as: 'items',
+          include: {
+            model: Menu,
+            attributes: ['id', 'name', 'price', 'imageUrl'],
+          },
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          required: false,
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number'],
+          required: false,
+        },
+      ],
+    });
+
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -196,7 +625,6 @@ const updateOrderStatus = async (req, res) => {
       });
     }
 
-    // Validasi transisi status
     const validTransitions = {
       pending: ['processing'],
       processing: ['done'],
@@ -210,15 +638,54 @@ const updateOrderStatus = async (req, res) => {
       });
     }
 
+    const oldStatus = order.status;
     order.status = status;
     await order.save();
+
+    try {
+      if (global.io) {
+        const orderData = order.toJSON();
+
+        if (orderData.coupon_used) {
+          try {
+            orderData.coupon_used = JSON.parse(orderData.coupon_used);
+          } catch (e) {
+            // Ignore parsing error
+          }
+        }
+
+        global.io.to('admin-room').emit('order-status-updated', {
+          orderId: id,
+          oldStatus: oldStatus,
+          newStatus: status,
+          order: orderData,
+          timestamp: new Date().toISOString(),
+        });
+
+        global.io.to(`order-${id}`).emit('order-status-changed', {
+          orderId: id,
+          oldStatus: oldStatus,
+          newStatus: status,
+          order: orderData,
+          message: `Status pesanan berubah dari ${oldStatus} menjadi ${status}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (wsError) {
+      // Don't fail request due to WebSocket error
+    }
+
+    if (status === 'done' && order.is_paid && order.user_id) {
+      addPointsAfterOrderCompletion(order.id);
+    }
 
     res.json({
       success: true,
       data: order,
+      message: `Status order berhasil diupdate dari ${oldStatus} menjadi ${status}`,
+      realTimeUpdate: !!global.io,
     });
   } catch (err) {
-    console.error(err);
     res.status(500).json({
       success: false,
       message: 'Failed to update status',
@@ -228,29 +695,130 @@ const updateOrderStatus = async (req, res) => {
 
 const confirmCashPayment = async (req, res) => {
   const { id } = req.params;
+  const transaction = await sequelize.transaction();
 
   try {
-    const order = await Order.findByPk(id);
+    const order = await Order.findByPk(id, {
+      include: [
+        {
+          model: OrderItem,
+          as: 'items',
+          include: {
+            model: Menu,
+            attributes: ['id', 'name', 'price', 'imageUrl'],
+          },
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          required: false,
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number'],
+          required: false,
+        },
+      ],
+      transaction,
+    });
+
     if (!order) {
-      return res
-        .status(404)
-        .json({ success: false, message: 'Order tidak ditemukan' });
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
     }
 
     if (order.payment_type !== 'cash') {
+      await transaction.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Hanya pesanan cash yang bisa dikonfirmasi',
+        message: 'Only cash payments can be confirmed',
       });
     }
 
     order.is_paid = true;
-    await order.save();
+    await order.save({ transaction });
 
-    res.json({ success: true, order });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    const payment = await Payment.findOne({
+      where: { order_id: id },
+      transaction,
+    });
+
+    if (payment) {
+      payment.status = 'completed';
+      payment.paid_at = new Date();
+      await payment.save({ transaction });
+    } else {
+      await Payment.create(
+        {
+          order_id: id,
+          amount: order.total_price,
+          status: 'completed',
+          paid_at: new Date(),
+          payment_type: 'cash',
+        },
+        { transaction }
+      );
+    }
+
+    await transaction.commit();
+
+    try {
+      if (global.io) {
+        const orderData = order.toJSON();
+
+        if (orderData.coupon_used) {
+          try {
+            orderData.coupon_used = JSON.parse(orderData.coupon_used);
+          } catch (e) {
+            // Ignore parsing error
+          }
+        }
+
+        global.io.to('admin-room').emit('payment-confirmed', {
+          orderId: id,
+          is_paid: true,
+          order: orderData,
+          payment: payment ? payment.toJSON() : null,
+          timestamp: new Date().toISOString(),
+          message: `Pembayaran untuk order #${id} telah dikonfirmasi`,
+        });
+
+        global.io.to(`order-${id}`).emit('payment-status-changed', {
+          orderId: id,
+          is_paid: true,
+          order: orderData,
+          message: `Pembayaran telah dikonfirmasi - Status: LUNAS`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (wsError) {
+      // Don't fail request due to WebSocket error
+    }
+
+    if (order.status === 'done' && order.user_id) {
+      addPointsAfterOrderCompletion(order.id);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Payment confirmed successfully',
+      data: {
+        order: order.toJSON(),
+        payment: payment ? payment.toJSON() : null,
+      },
+    });
+  } catch (error) {
+    await transaction.rollback();
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to confirm payment',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 };
 
@@ -273,29 +841,216 @@ const getReport = async (req, res) => {
       where.payment_type = payment_type;
     }
 
-    const orders = await Order.findAll({ where });
+    const orders = await Order.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name'],
+          required: false,
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number'],
+          required: false,
+        },
+      ],
+    });
 
     const total_income = orders.reduce((acc, o) => acc + o.total_price, 0);
+    const total_discount = orders.reduce(
+      (acc, o) => acc + (o.discount_amount || 0),
+      0
+    );
+    const total_orders_with_coupon = orders.filter(
+      (o) => o.discount_amount > 0
+    ).length;
+    const total_points_given = orders.reduce(
+      (acc, o) => acc + (o.points_earned || 0),
+      0
+    );
 
     res.json({
       total_order: orders.length,
       total_income,
+      total_discount,
+      total_orders_with_coupon,
+      total_points_given,
+      average_discount:
+        total_orders_with_coupon > 0
+          ? Math.round(total_discount / total_orders_with_coupon)
+          : 0,
       orders,
     });
   } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .json({ success: false, message: 'Gagal mengambil laporan' });
+    res.status(500).json({
+      success: false,
+      message: 'Gagal mengambil laporan',
+    });
+  }
+};
+
+const getUserOrderHistory = async (req, res) => {
+  try {
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    const { count, rows: orders } = await Order.findAndCountAll({
+      where: { user_id: req.user.id },
+      include: [
+        {
+          model: OrderItem,
+          as: 'items',
+          include: {
+            model: Menu,
+            attributes: ['name', 'price'],
+          },
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number'],
+          required: false,
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+    });
+
+    const completedOrders = await Order.findAll({
+      where: {
+        user_id: req.user.id,
+        status: 'done',
+        is_paid: true,
+      },
+      attributes: ['total_price', 'points_earned', 'discount_amount'],
+    });
+
+    const total_points_earned = completedOrders.reduce((sum, order) => {
+      return sum + (order.points_earned || 0);
+    }, 0);
+
+    const total_savings = completedOrders.reduce((sum, order) => {
+      return sum + (order.discount_amount || 0);
+    }, 0);
+
+    res.status(200).json({
+      success: true,
+      message: 'Berhasil mengambil riwayat pesanan',
+      data: {
+        orders: orders,
+        points_summary: {
+          total_points_earned: total_points_earned,
+          total_orders: completedOrders.length,
+          total_spent: completedOrders.reduce(
+            (sum, order) => sum + order.total_price,
+            0
+          ),
+          total_savings: total_savings,
+          current_points: req.user.points,
+        },
+      },
+      pagination: {
+        total: count,
+        page: parseInt(page),
+        limit: parseInt(limit),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: 'Gagal mengambil riwayat pesanan',
+    });
+  }
+};
+
+const validateCouponForOrder = async (req, res) => {
+  try {
+    const { user_coupon_id, total_amount } = req.body;
+
+    if (!user_coupon_id || !req.user?.id) {
+      return res.status(400).json({
+        success: false,
+        message: 'User coupon ID dan user ID diperlukan',
+      });
+    }
+
+    const userCoupon = await UserCoupon.findOne({
+      where: {
+        id: user_coupon_id,
+        user_id: req.user.id,
+        is_used: false,
+      },
+      include: [
+        {
+          model: Coupon,
+          as: 'coupon',
+          where: {
+            is_active: true,
+            [Op.or]: [
+              { valid_until: null },
+              { valid_until: { [Op.gt]: new Date() } },
+            ],
+          },
+        },
+      ],
+    });
+
+    if (!userCoupon || !userCoupon.coupon) {
+      return res.status(404).json({
+        success: false,
+        message: 'Kupon tidak valid atau sudah digunakan',
+      });
+    }
+
+    const coupon = userCoupon.coupon;
+    let discount_amount = 0;
+
+    if (coupon.discount_type === 'percentage') {
+      discount_amount = Math.floor(
+        total_amount * (coupon.discount_value / 100)
+      );
+    } else if (coupon.discount_type === 'fixed') {
+      discount_amount = Math.min(coupon.discount_value, total_amount);
+    }
+
+    const final_price = Math.max(0, total_amount - discount_amount);
+
+    res.json({
+      success: true,
+      data: {
+        valid: true,
+        coupon: {
+          name: coupon.name,
+          discount_type: coupon.discount_type,
+          discount_value: coupon.discount_value,
+          discount_amount: discount_amount,
+          final_price: final_price,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Gagal validasi kupon',
+      error: process.env.NODE_ENV === 'development' ? error.message : null,
+    });
   }
 };
 
 module.exports = {
+  validateTableNumber,
   createOrder,
+  createOrderGuest,
   getAllOrders,
   getOrderById,
   getPublicOrderById,
   updateOrderStatus,
   confirmCashPayment,
   getReport,
+  getUserOrderHistory,
+  validateCouponForOrder,
 };
