@@ -142,7 +142,7 @@ const createOrder = async (req, res) => {
 
           if (coupon.discount_type === 'percentage') {
             discount_amount = Math.floor(
-              total_price * (coupon.discount_value / 100)
+              total_price * (coupon.discount_value / 100),
             );
           } else if (coupon.discount_type === 'fixed') {
             discount_amount = Math.min(coupon.discount_value, total_price);
@@ -167,7 +167,7 @@ const createOrder = async (req, res) => {
                 is_used: false,
               },
               transaction,
-            }
+            },
           );
 
           if (affectedRows === 0) {
@@ -189,6 +189,7 @@ const createOrder = async (req, res) => {
         }
       } catch (couponError) {
         // Continue without coupon if there's an error
+        console.error('Coupon error:', couponError);
       }
     }
 
@@ -208,7 +209,7 @@ const createOrder = async (req, res) => {
         points_awarded: false,
         points_earned: 0,
       },
-      { transaction }
+      { transaction },
     );
 
     await OrderItem.bulkCreate(
@@ -219,7 +220,7 @@ const createOrder = async (req, res) => {
         subtotal:
           menus.find((m) => m.id === item.menu_id).price * item.quantity,
       })),
-      { transaction }
+      { transaction },
     );
 
     await Payment.create(
@@ -228,10 +229,69 @@ const createOrder = async (req, res) => {
         amount: final_price,
         status: 'pending',
       },
-      { transaction }
+      { transaction },
     );
 
     await transaction.commit();
+
+    // ============= WEBSOCKET EMIT UNTUK PESANAN BARU =============
+    try {
+      if (global.io) {
+        const fullOrder = await Order.findByPk(order.id, {
+          include: [
+            {
+              model: OrderItem,
+              as: 'items',
+              include: {
+                model: Menu,
+                attributes: ['id', 'name', 'price', 'imageUrl'],
+              },
+            },
+            {
+              model: User,
+              as: 'user',
+              attributes: ['id', 'name', 'email'],
+              required: false,
+            },
+            {
+              model: Table,
+              as: 'table',
+              attributes: ['id', 'table_number', 'is_active'],
+              required: false,
+            },
+          ],
+        });
+
+        const orderForEmit = fullOrder.toJSON();
+
+        // Parse coupon_used jika ada
+        if (orderForEmit.coupon_used) {
+          try {
+            orderForEmit.coupon_used = JSON.parse(orderForEmit.coupon_used);
+          } catch (e) {
+            console.error('Error parsing coupon_used:', e);
+          }
+        }
+
+        // Emit event ke admin room
+        global.io.to('admin-room').emit('order-created', {
+          orderId: order.id,
+          order: orderForEmit,
+          type: 'new-order',
+          timestamp: new Date().toISOString(),
+          message: `Pesanan baru #${order.id} telah dibuat`,
+          source: req.user ? 'user' : 'guest',
+          customerName: req.user?.name || 'Guest',
+          tableNumber: table_number || 'Take Away',
+          totalAmount: final_price,
+        });
+
+        console.log(`📢 WebSocket emit: order-created for order #${order.id}`);
+      }
+    } catch (wsError) {
+      console.error('❌ WebSocket emit error in createOrder:', wsError);
+    }
+    // ============= END WEBSOCKET EMIT =============
 
     return res.json({
       success: true,
@@ -251,6 +311,7 @@ const createOrder = async (req, res) => {
     });
   } catch (error) {
     await transaction.rollback();
+    console.error('Order creation error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to create order',
@@ -324,7 +385,7 @@ const createOrderGuest = async (req, res) => {
         points_awarded: false,
         points_earned: 0,
       },
-      { transaction }
+      { transaction },
     );
 
     await OrderItem.bulkCreate(
@@ -335,7 +396,7 @@ const createOrderGuest = async (req, res) => {
         subtotal:
           menus.find((m) => m.id === item.menu_id).price * item.quantity,
       })),
-      { transaction }
+      { transaction },
     );
 
     await Payment.create(
@@ -344,10 +405,56 @@ const createOrderGuest = async (req, res) => {
         amount: total_price,
         status: 'pending',
       },
-      { transaction }
+      { transaction },
     );
 
     await transaction.commit();
+
+    // ============= WEBSOCKET EMIT UNTUK PESANAN BARU GUEST =============
+    try {
+      if (global.io) {
+        const fullOrder = await Order.findByPk(order.id, {
+          include: [
+            {
+              model: OrderItem,
+              as: 'items',
+              include: {
+                model: Menu,
+                attributes: ['id', 'name', 'price', 'imageUrl'],
+              },
+            },
+            {
+              model: Table,
+              as: 'table',
+              attributes: ['id', 'table_number', 'is_active'],
+              required: false,
+            },
+          ],
+        });
+
+        const orderForEmit = fullOrder.toJSON();
+
+        // Emit event ke admin room
+        global.io.to('admin-room').emit('order-created', {
+          orderId: order.id,
+          order: orderForEmit,
+          type: 'new-order',
+          timestamp: new Date().toISOString(),
+          message: `Pesanan baru #${order.id} (Guest) telah dibuat`,
+          source: 'guest',
+          customerName: 'Guest',
+          tableNumber: table_number || 'Take Away',
+          totalAmount: total_price,
+        });
+
+        console.log(
+          `📢 WebSocket emit: order-created for guest order #${order.id}`,
+        );
+      }
+    } catch (wsError) {
+      console.error('❌ WebSocket emit error in createOrderGuest:', wsError);
+    }
+    // ============= END WEBSOCKET EMIT =============
 
     return res.json({
       success: true,
@@ -362,6 +469,7 @@ const createOrderGuest = async (req, res) => {
     });
   } catch (error) {
     await transaction.rollback();
+    console.error('Guest order creation error:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to create guest order',
@@ -388,7 +496,7 @@ const getAllOrders = async (req, res) => {
         {
           model: User,
           as: 'user',
-          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          attributes: ['id', 'name', 'email', 'role_id'],
           required: false,
         },
         {
@@ -423,66 +531,17 @@ const getAllOrders = async (req, res) => {
   }
 };
 
-const getOrderById = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const order = await Order.findOne({
-      where: { id },
-      include: [
-        {
-          model: OrderItem,
-          as: 'items',
-          include: {
-            model: Menu,
-            attributes: ['id', 'name', 'price', 'imageUrl'],
-          },
-        },
-        {
-          model: User,
-          as: 'user',
-          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
-          required: false,
-        },
-        {
-          model: Table,
-          as: 'table',
-          attributes: ['table_number', 'is_active'],
-          required: false,
-        },
-      ],
-    });
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found',
-      });
-    }
-
-    const orderData = order.toJSON();
-    if (orderData.coupon_used) {
-      orderData.coupon_used = JSON.parse(orderData.coupon_used);
-    }
-
-    res.status(200).json({
-      success: true,
-      data: orderData,
-    });
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch order details',
-    });
-  }
-};
-
+// GET PUBLIC ORDER BY ID
 const getPublicOrderById = async (req, res) => {
   const { id } = req.params;
+  const userId = req.user?.id;
 
   try {
     const order = await Order.findOne({
-      where: { id },
+      where: {
+        id,
+        user_id: null,
+      },
       attributes: [
         'id',
         'status',
@@ -518,17 +577,100 @@ const getPublicOrderById = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Order not found',
+        errorType: 'ORDER_NOT_FOUND_OR_USER_ORDER',
       });
     }
 
+    if (userId) {
+      return res.status(403).json({
+        success: false,
+        message:
+          'Order ini adalah order guest. Silakan logout untuk mengakses order guest.',
+        errorType: 'USER_ACCESSING_GUEST_ORDER',
+      });
+    }
+
+    const orderData = order.toJSON();
+
     res.json({
       success: true,
-      data: order,
+      data: orderData,
     });
   } catch (err) {
     res.status(500).json({
       success: false,
       message: 'Server error',
+    });
+  }
+};
+
+// GET ORDER BY ID 
+// orderController.js - update getOrderById
+const getOrderById = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  const userRole = req.user.role;
+
+  try {
+    const order = await Order.findOne({
+      where: { id },
+      include: [
+        {
+          model: OrderItem,
+          as: 'items',
+          include: {
+            model: Menu,
+            attributes: ['id', 'name', 'price', 'imageUrl'],
+          },
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'role_id'],
+          required: false,
+        },
+        {
+          model: Table,
+          as: 'table',
+          attributes: ['table_number', 'is_active'],
+          required: false,
+        },
+      ],
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    // ⭐ PERBEDAAN: Admin bisa akses semua, user hanya milik sendiri
+    if (userRole !== 'admin' && order.user_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized access. This order does not belong to you.',
+      });
+    }
+
+    const orderData = order.toJSON();
+    if (orderData.coupon_used) {
+      try {
+        orderData.coupon_used = JSON.parse(orderData.coupon_used);
+      } catch (e) {
+        // Ignore parsing error
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: orderData,
+    });
+  } catch (err) {
+    console.error('getOrderById error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
     });
   }
 };
@@ -606,7 +748,7 @@ const updateOrderStatus = async (req, res) => {
         {
           model: User,
           as: 'user',
-          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          attributes: ['id', 'name', 'email', 'role_id'],
           required: false,
         },
         {
@@ -711,7 +853,7 @@ const confirmCashPayment = async (req, res) => {
         {
           model: User,
           as: 'user',
-          attributes: ['id', 'name', 'email', 'phone_number', 'role_id'],
+          attributes: ['id', 'name', 'email', , 'role_id'],
           required: false,
         },
         {
@@ -761,7 +903,7 @@ const confirmCashPayment = async (req, res) => {
           paid_at: new Date(),
           payment_type: 'cash',
         },
-        { transaction }
+        { transaction },
       );
     }
 
@@ -862,14 +1004,14 @@ const getReport = async (req, res) => {
     const total_income = orders.reduce((acc, o) => acc + o.total_price, 0);
     const total_discount = orders.reduce(
       (acc, o) => acc + (o.discount_amount || 0),
-      0
+      0,
     );
     const total_orders_with_coupon = orders.filter(
-      (o) => o.discount_amount > 0
+      (o) => o.discount_amount > 0,
     ).length;
     const total_points_given = orders.reduce(
       (acc, o) => acc + (o.points_earned || 0),
-      0
+      0,
     );
 
     res.json({
@@ -947,7 +1089,7 @@ const getUserOrderHistory = async (req, res) => {
           total_orders: completedOrders.length,
           total_spent: completedOrders.reduce(
             (sum, order) => sum + order.total_price,
-            0
+            0,
           ),
           total_savings: total_savings,
           current_points: req.user.points,
@@ -1011,7 +1153,7 @@ const validateCouponForOrder = async (req, res) => {
 
     if (coupon.discount_type === 'percentage') {
       discount_amount = Math.floor(
-        total_amount * (coupon.discount_value / 100)
+        total_amount * (coupon.discount_value / 100),
       );
     } else if (coupon.discount_type === 'fixed') {
       discount_amount = Math.min(coupon.discount_value, total_amount);

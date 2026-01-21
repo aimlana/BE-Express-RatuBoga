@@ -1,7 +1,7 @@
 const { Coupon, UserCoupon, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
-// Get all coupons (with pagination and filters)
+// Get all coupons 
 const getAllCoupons = async (req, res) => {
   const { page = 1, limit = 10, search, is_active } = req.query;
   const offset = (page - 1) * limit;
@@ -278,7 +278,7 @@ const deleteCoupon = async (req, res) => {
       });
     }
 
-    // Check if coupon has been used
+    // Cek kupon sudah digunakan atau belum
     const usedCoupons = await UserCoupon.count({
       where: { coupon_id: id, is_used: true },
       transaction,
@@ -292,7 +292,7 @@ const deleteCoupon = async (req, res) => {
       });
     }
 
-    // Delete user coupons associated with this coupon
+    // hapus relasi UserCoupon dari coupon
     await UserCoupon.destroy({
       where: { coupon_id: id },
       transaction,
@@ -338,11 +338,12 @@ const getCouponStats = async (req, res) => {
         'id',
         'name',
         [
-          sequelize.fn('COUNT', sequelize.col('user_coupons.id')),
+          sequelize.literal(
+            '(SELECT COUNT(*) FROM UserCoupons WHERE UserCoupons.coupon_id = Coupon.id)'
+          ),
           'usage_count',
         ],
       ],
-      group: ['Coupon.id'],
       order: [[sequelize.literal('usage_count'), 'DESC']],
       limit: 5,
     });

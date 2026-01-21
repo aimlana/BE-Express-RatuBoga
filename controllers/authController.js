@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-const { maskEmail, maskPhoneNumber } = require('../utils/maskers');
+const { maskEmail } = require('../utils/maskers');
 
 const SECRET_KEY = process.env.JWT_SECRET;
 const BASE_URL_FRONTEND = process.env.FRONTEND_LINK;
@@ -167,11 +167,11 @@ const sendOTPEmail = async (email, name, otpCode) => {
 };
 
 const register = async (req, res) => {
-  const { name, email, phone_number, password, confirmPassword } = req.body;
+  const { name, email, password, confirmPassword } = req.body;
 
-  if (!name || !email || !phone_number || !password) {
+  if (!name || !email || !password) {
     return res.status(400).json({
-      message: 'Semua field harus diisi: nama, email, no. HP, dan password',
+      message: 'Semua field harus diisi: nama, email, dan password',
     });
   }
 
@@ -193,18 +193,12 @@ const register = async (req, res) => {
       return res.status(400).json({ message: 'Email sudah terdaftar' });
     }
 
-    const existingPhone = await User.findOne({ where: { phone_number } });
-    if (existingPhone) {
-      return res.status(400).json({ message: 'Nomor HP sudah terdaftar' });
-    }
-
     // Buat user dengan status unverified
     const user = await User.create({
       name,
       email,
-      phone_number,
       role_id: 2,
-      is_verified: false, // TAMBAH FIELD INI
+      is_verified: false,
     });
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -240,7 +234,6 @@ const register = async (req, res) => {
         id: user.id,
         name: user.name,
         email: maskEmail(user.email),
-        phone_number: maskPhoneNumber(user.phone_number),
         is_verified: false,
       },
       requires_verification: true,
@@ -258,7 +251,7 @@ const register = async (req, res) => {
 
     if (err.name === 'SequelizeUniqueConstraintError') {
       return res.status(400).json({
-        message: 'Email atau nomor HP sudah terdaftar',
+        message: 'Email sudah terdaftar',
       });
     }
 
@@ -286,18 +279,17 @@ const resendOTP = async (req, res) => {
       return res.status(400).json({ message: 'Email sudah terverifikasi' });
     }
 
-    // Cek cooldown (1 menit) - ✅ PERBAIKAN: ganti 'created_at' menjadi 'createdAt'
     const lastOTP = await OTP.findOne({
       where: {
         user_id: user.id,
         type: 'email_verification',
       },
-      order: [['createdAt', 'DESC']], // ✅ DIPERBAIKI
+      order: [['createdAt', 'DESC']], 
     });
 
     if (lastOTP) {
       const timeSinceLastOTP =
-        Date.now() - new Date(lastOTP.createdAt).getTime(); // ✅ Juga perbaiki di sini
+        Date.now() - new Date(lastOTP.createdAt).getTime(); 
       if (timeSinceLastOTP < OTP_RESEND_COOLDOWN) {
         const remainingTime = Math.ceil(
           (OTP_RESEND_COOLDOWN - timeSinceLastOTP) / 1000
@@ -387,7 +379,7 @@ const verifyOTP = async (req, res) => {
     // Update user menjadi verified
     await User.update({ is_verified: true }, { where: { id: user.id } });
 
-    // Tandai OTP sebagai digunakan
+    // Update OTP status sudah digunakan
     await OTP.update({ is_used: true }, { where: { id: otpRecord.id } });
 
     return res.json({
@@ -411,14 +403,13 @@ const login = async (req, res) => {
 
   if (!login || !password) {
     return res.status(400).json({
-      message: 'Email / no. hp dan password harus diisi',
+      message: 'Email dan password harus diisi',
     });
   }
 
   try {
-    const isMail = login.includes('@');
     const user = await User.findOne({
-      where: isMail ? { email: login } : { phone_number: login },
+      where: { email: login }, 
       include: [
         {
           association: 'role',
@@ -429,11 +420,11 @@ const login = async (req, res) => {
 
     if (!user) {
       return res.status(404).json({
-        message: isMail ? 'Email belum terdaftar' : 'No. HP belum terdaftar',
+        message: 'Email belum terdaftar',
       });
     }
 
-    // Cek verifikasi email (lagi)
+    // Cek verifikasi email
     if (!user.is_verified) {
       return res.status(403).json({
         message: 'Email belum diverifikasi. Silakan cek email untuk kode OTP.',
@@ -475,7 +466,6 @@ const login = async (req, res) => {
         id: user.id,
         name: user.name,
         email: maskEmail(user.email),
-        phone_number: maskPhoneNumber(user.phone_number),
         role: user.role.name,
         is_verified: user.is_verified,
       },
@@ -542,7 +532,7 @@ const verifyToken = async (req, res, next) => {
 const verifyAuth = async (req, res) => {
   try {
     const user = await User.findByPk(req.userId, {
-      attributes: ['id', 'name', 'email', 'phone_number'],
+      attributes: ['id', 'name', 'email'],
       include: [
         {
           association: 'role',
@@ -560,7 +550,6 @@ const verifyAuth = async (req, res) => {
         id: user.id,
         name: user.name,
         email: user.email,
-        phone_number: user.phone_number,
         role: user.role.name,
       },
     });
@@ -573,16 +562,16 @@ const verifyAuth = async (req, res) => {
 // Update Profile
 const updateProfile = async (req, res) => {
   const userId = req.userId;
-  const { name, email, phone_number, oldPassword, newPassword } = req.body;
+  const { name, email, oldPassword, newPassword } = req.body;
 
-  if (!name || !email || !phone_number) {
+  if (!name || !email) {
     return res.status(400).json({
-      message: 'Nama, email, dan no. HP wajib diisi',
+      message: 'Nama dan email wajib diisi',
     });
   }
 
   try {
-    await User.update({ name, email, phone_number }, { where: { id: userId } });
+    await User.update({ name, email }, { where: { id: userId } });
 
     if (oldPassword && newPassword) {
       const authData = await Auth.findOne({ where: { user_id: userId } });
@@ -608,7 +597,6 @@ const updateProfile = async (req, res) => {
         id: userId,
         name,
         email,
-        phone_number,
       },
     });
   } catch (err) {

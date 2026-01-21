@@ -1,7 +1,5 @@
 'use strict';
-const {
-  Model
-} = require('sequelize');
+const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class User extends Model {
     static associate(models) {
@@ -35,17 +33,32 @@ module.exports = (sequelize, DataTypes) => {
       name: {
         type: DataTypes.STRING,
         allowNull: false,
+        validate: {
+          notEmpty: {
+            msg: 'Nama tidak boleh kosong',
+          },
+          len: {
+            args: [2, 100],
+            msg: 'Nama harus 2-100 karakter',
+          },
+        },
       },
       email: {
         type: DataTypes.STRING,
         allowNull: false,
-        unique: true,
+        unique: {
+          msg: 'Email sudah terdaftar',
+        },
+        validate: {
+          notEmpty: {
+            msg: 'Email tidak boleh kosong',
+          },
+          isEmail: {
+            msg: 'Format email tidak valid',
+          },
+        },
       },
-      phone_number: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-      },
+      // HAPUS phone_number di sini
       role_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
@@ -70,6 +83,12 @@ module.exports = (sequelize, DataTypes) => {
       sequelize,
       modelName: 'User',
       timestamps: true,
+      // Jika perlu menambahkan default scope untuk mengecualikan phone_number
+      defaultScope: {
+        attributes: {
+          exclude: ['phone_number'], 
+        },
+      },
     }
   );
   return User;

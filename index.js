@@ -11,7 +11,7 @@ const routes = require('./routes');
 // CORS configuration untuk WebSocket
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173', // Sesuaikan dengan port frontend
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173', 
     credentials: true,
   })
 );
@@ -34,7 +34,7 @@ const PORT = process.env.PORT || 5001;
 // Buat HTTP server
 const server = http.createServer(app);
 
-// WebSocket configuration dengan options yang lebih lengkap
+// WebSocket configuration 
 const io = socketIo(server, {
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
@@ -42,7 +42,7 @@ const io = socketIo(server, {
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
   },
-  transports: ['websocket', 'polling'], // Tambah polling sebagai fallback
+  transports: ['websocket', 'polling'], 
   pingTimeout: 60000,
   pingInterval: 25000,
 });
@@ -92,7 +92,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Export io untuk digunakan di controller lain
 global.io = io;
 
 // Health check untuk WebSocket

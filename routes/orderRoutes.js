@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   authenticateToken,
   requireAdmin,
+  requireAuth,
 } = require('../middlewares/authMiddleware');
 const {
   validateTableNumber,
@@ -26,7 +27,7 @@ router.get('/validate-table/:tableNumber', validateTableNumber);
 
 // Admin routes (require authentication + admin role)
 router.get('/', authenticateToken, requireAdmin, getAllOrders);
-router.get('/:id', authenticateToken, requireAdmin, getOrderById);
+router.get('/:id', authenticateToken, requireAuth, getOrderById);
 router.put('/:id/status', authenticateToken, requireAdmin, updateOrderStatus);
 router.patch(
   '/:id/confirm-payment',

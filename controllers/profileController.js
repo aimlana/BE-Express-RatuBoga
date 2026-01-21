@@ -11,7 +11,6 @@ const getProfile = async (req, res) => {
         'uuid',
         'name',
         'email',
-        'phone_number',
         'role_id',
         'createdAt',
       ],
@@ -40,7 +39,6 @@ const getProfile = async (req, res) => {
       uuid: user.uuid,
       name: user.name,
       email: user.email,
-      phone_number: user.phone_number,
       role: user.role.name,
       role_description: user.role.description,
       created_at: user.createdAt,
@@ -54,11 +52,11 @@ const getProfile = async (req, res) => {
 
 // Update profile - TETAP SAMA
 const updateProfile = async (req, res) => {
-  const { name, email, phone_number } = req.body;
+  const { name, email } = req.body;
 
   try {
     // Validasi input
-    if (!name || !email || !phone_number) {
+    if (!name || !email) {
       return res.status(400).json({
         message: 'Nama, email, dan nomor telepon harus diisi',
       });
@@ -84,31 +82,15 @@ const updateProfile = async (req, res) => {
       }
     }
 
-    // Check if phone number already exists (excluding current user)
-    if (phone_number !== user.phone_number) {
-      const existingPhone = await User.findOne({
-        where: {
-          phone_number,
-          id: { [Op.ne]: req.userId },
-        },
-      });
-      if (existingPhone) {
-        return res
-          .status(400)
-          .json({ message: 'Nomor telepon sudah digunakan oleh user lain' });
-      }
-    }
-
     // Update user data
     await user.update({
       name: name.trim(),
       email: email.trim(),
-      phone_number: phone_number.trim(),
     });
 
     // Get updated user data with role
     const updatedUser = await User.findByPk(req.userId, {
-      attributes: ['id', 'name', 'email', 'phone_number'],
+      attributes: ['id', 'name', 'email'],
       include: [
         {
           model: Role,
@@ -124,7 +106,6 @@ const updateProfile = async (req, res) => {
         id: updatedUser.id,
         name: updatedUser.name,
         email: updatedUser.email,
-        phone_number: updatedUser.phone_number,
         role: updatedUser.role.name,
       },
     });
